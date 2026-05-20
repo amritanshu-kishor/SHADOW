@@ -1,0 +1,24 @@
+{
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently \"vite --host 0.0.0.0\" \"node --watch server/index.js\"",
+    "build": "vite build",
+    "start": "node server/index.js",
+    "preview": "vite preview --host 0.0.0.0"
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "latest",
+    "better-sqlite3": "^12.10.0",
+    "compression": "^1.8.1",
+    "concurrently": "^9.2.1",
+    "cors": "^2.8.6",
+    "express": "^5.2.1",
+    "helmet": "^8.1.0",
+    "lucide-react": "latest",
+    "morgan": "^1.10.1",
+    "react": "latest",
+    "react-dom": "latest",
+    "vite": "latest",
+    "zod": "^4.4.3"
+  }
+}

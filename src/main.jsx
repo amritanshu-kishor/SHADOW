@@ -297,13 +297,13 @@ function App() {
                 <Ban size={22} />
               </div>
               <form className="app-form" onSubmit={addRestrictedApp}>
-                <input value={appDraft} onChange={(event) => setAppDraft(event.target.value)} placeholder="App or website" maxLength="80" />
+                <input value={appDraft} onChange={(event) => setAppDraft(event.target.value)} placeholder="App path or website (http://... or C:\\path\\app.exe)" maxLength="180" />
                 <button disabled={busyAction === 'add-app'} aria-label="Add restricted app"><Plus size={18} /></button>
               </form>
               <div className="restricted-list">
                 {state.restrictedApps.map((app) => (
                   <button key={app.id} onClick={() => removeRestrictedApp(app.name)}>
-                    <Ban size={14} /> {app.name}
+                    <Ban size={14} /> {app.name} <small className="muted">{app.type ?? 'app'}</small>
                   </button>
                 ))}
               </div>

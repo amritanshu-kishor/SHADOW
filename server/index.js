@@ -6,6 +6,7 @@ import helmet from 'helmet';
 import morgan from 'morgan';
 import fs from 'node:fs';
 import path from 'node:path';
+import { exec } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 
@@ -62,7 +63,22 @@ db.exec(`
   );
 `);
 
+ensureRestrictedAppColumns();
 seedDatabase();
+
+function ensureRestrictedAppColumns() {
+  const cols = db.prepare("PRAGMA table_info(restricted_apps)").all().map((c) => c.name);
+  try {
+    if (!cols.includes('type')) {
+      db.prepare("ALTER TABLE restricted_apps ADD COLUMN type TEXT NOT NULL DEFAULT 'app'").run();
+    }
+    if (!cols.includes('path')) {
+      db.prepare("ALTER TABLE restricted_apps ADD COLUMN path TEXT").run();
+    }
+  } catch (err) {
+    console.warn('Could not alter restricted_apps table:', err?.message ?? err);
+  }
+}
 
 app.use(helmet({ contentSecurityPolicy: false }));
 app.use(cors({ origin: process.env.CLIENT_ORIGIN || true }));
@@ -157,8 +173,26 @@ app.post('/api/penalty/serve', (request, response) => {
 });
 
 app.post('/api/restricted-apps', (request, response) => {
-  const { name } = z.object({ name: z.string().trim().min(1).max(80) }).parse(request.body);
-  db.prepare('INSERT OR IGNORE INTO restricted_apps (id, name) VALUES (?, ?)').run(crypto.randomUUID(), name);
+  const bodySchema = z.object({ name: z.string().trim().min(1).max(180), type: z.enum(['app', 'local', 'url']).optional(), path: z.string().optional() });
+  const { name, type, path: maybePath } = bodySchema.parse(request.body);
+
+  // Auto-detect type when not provided
+  let finalType = type;
+  let finalPath = maybePath ?? null;
+  if (!finalType) {
+    const n = name.trim();
+    if (/^https?:\/\//i.test(n)) {
+      finalType = 'url';
+      finalPath = null;
+    } else if (/^[A-Za-z]:\\|\\|\.exe$/i.test(n) || n.includes('\\') || n.endsWith('.exe')) {
+      finalType = 'local';
+      finalPath = n;
+    } else {
+      finalType = 'app';
+    }
+  }
+
+  db.prepare('INSERT OR IGNORE INTO restricted_apps (id, name, type, path) VALUES (?, ?, ?, ?)').run(crypto.randomUUID(), name.trim(), finalType, finalPath);
   response.status(201).json(readState());
 });
 
@@ -209,7 +243,7 @@ function seedDatabase() {
 function readState() {
   const tasks = db.prepare('SELECT id, title, minutes, day, xp, completed, created_at, completed_at FROM tasks ORDER BY day, created_at').all()
     .map((task) => ({ ...task, completed: Boolean(task.completed) }));
-  const restrictedApps = db.prepare('SELECT id, name, created_at FROM restricted_apps ORDER BY name').all();
+  const restrictedApps = db.prepare('SELECT id, name, type, path, created_at FROM restricted_apps ORDER BY name').all();
   const activeSession = db.prepare(`
     SELECT focus_sessions.id, focus_sessions.task_id AS taskId, focus_sessions.started_at AS startedAt, tasks.title
     FROM focus_sessions
@@ -306,3 +340,49 @@ function rankForLevel(level) {
   if (level >= 3) return 'C-Rank';
   return 'E-Rank';
 }
+
+// Background enforcer: when a focus session is active, attempt to terminate local restricted apps
+function enforceRestrictedApps() {
+  try {
+    const active = db.prepare("SELECT 1 FROM focus_sessions WHERE status = 'active' LIMIT 1").get();
+    if (!active) return;
+
+    const locals = db.prepare("SELECT id, name, type, path FROM restricted_apps WHERE type IN ('local','app')").all();
+    if (!locals || locals.length === 0) return;
+
+    exec('tasklist /FO CSV', (err, stdout) => {
+      if (err || !stdout) return;
+      const lines = stdout.split(/\r?\n/).filter(Boolean);
+      // skip header
+      for (let i = 1; i < lines.length; i++) {
+        const line = lines[i];
+        const m = line.match(/^"([^"]+)","(\d+)","([^"]+)","?(\d+)"?,"([^"]+)"$/);
+        if (!m) continue;
+        const image = m[1];
+        const pid = m[2];
+        const imgLower = image.toLowerCase();
+
+        locals.forEach((appEntry) => {
+          const nameLower = (appEntry.path ?? appEntry.name).toLowerCase();
+          const base = path.basename(appEntry.path ?? appEntry.name).toLowerCase();
+          if (imgLower.includes(nameLower) || imgLower.includes(base) || base.includes(imgLower)) {
+            // kill this pid
+            exec(`taskkill /PID ${pid} /F`, (killErr) => {
+              if (killErr) {
+                // non-fatal
+              } else {
+                console.log(`Enforcer: terminated ${image} (pid ${pid}) for restriction ${appEntry.name}`);
+              }
+            });
+          }
+        });
+      }
+    });
+  } catch (e) {
+    // do not crash the server
+    console.warn('Enforcer error', e?.message ?? e);
+  }
+}
+
+// Run enforcer every 5s
+setInterval(enforceRestrictedApps, 5000);
